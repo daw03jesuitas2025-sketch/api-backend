@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Petition;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
@@ -10,6 +11,31 @@ use Illuminate\Support\Facades\Validator;
 
 class PetitionController extends Controller
 {
+    use AuthorizesRequests;
+
+    private function sendResponse($data, $message, $code = 200)
+    {
+        return response()->json([
+            'success' => true,
+            'data' => $data,
+            'message' => $message
+        ], $code);
+    }
+
+    private function sendError($error, $errorMessages = [], $code = 404)
+    {
+        $response = [
+            'success' => false,
+            'message' => $error,
+        ];
+
+        if (!empty($errorMessages)) {
+            $response['errors'] = $errorMessages;
+        }
+
+        return response()->json($response, $code);
+    }
+
     public function index()
     {
         try {
@@ -17,36 +43,27 @@ class PetitionController extends Controller
                 ->orderBy('id', 'desc')
                 ->get();
 
-            return response()->json($petitions, 200);
-
+            return $this->sendResponse($petitions, 'Peticiones recuperadas con éxito');
         } catch (\Exception $e) {
-            return response()->json([
-                'error' => 'Error al recuperar las peticiones',
-                'message' => $e->getMessage()
-            ], 500);
+            return $this->sendError('Error al recuperar peticiones', $e->getMessage(), 500);
         }
     }
 
     public function show($id)
     {
         try {
-            $petition = Petition::with(['user', 'category', 'files', 'signedUsers'])
-                ->findOrFail($id);
+            $petition = Petition::with(['user', 'category', 'files', 'signedUsers'])->findOrFail($id);
 
-            $petition->has_signed = false;
-
-            if (Auth::guard('api')->check()) {
-                $user = Auth::guard('api')->user();
-
-                $petition->has_signed = $petition->signedUsers()
-                    ->where('user_id', $user->id)
-                    ->exists();
+            $has_signed = false;
+            if ($user = Auth::guard('api')->user()) {
+                $has_signed = $petition->signedUsers()->where('user_id', $user->id)->exists();
             }
 
-            return response()->json($petition, 200);
+            $petition->has_signed = $has_signed;
 
+            return $this->sendResponse($petition, 'Petición encontrada');
         } catch (\Exception $e) {
-            return response()->json(['error' => 'Petición no encontrada'], 404);
+            return $this->sendError('Petición no encontrada', [], 404);
         }
     }
 
@@ -55,18 +72,18 @@ class PetitionController extends Controller
         try {
             $user = Auth::guard('api')->user();
 
+            if (!$user) {
+                return $this->sendError('No autenticado', [], 401);
+            }
+
             $petitions = Petition::where('user_id', $user->id)
-                ->with(['category', 'files'])
+                ->with(['user', 'category', 'files'])
                 ->orderBy('id', 'desc')
                 ->get();
 
-            return response()->json($petitions, 200);
-
+            return $this->sendResponse($petitions, 'Tus peticiones recuperadas con éxito');
         } catch (\Exception $e) {
-            return response()->json([
-                'error' => 'Error al recuperar tus peticiones',
-                'message' => $e->getMessage()
-            ], 500);
+            return $this->sendError('Error al recuperar tus peticiones', $e->getMessage(), 500);
         }
     }
 
@@ -75,178 +92,173 @@ class PetitionController extends Controller
         try {
             $user = Auth::guard('api')->user();
 
+            if (!$user) {
+                return $this->sendError('No autenticado', [], 401);
+            }
+
             $petitions = $user->signedPetitions()
+
                 ->with(['user', 'category', 'files'])
                 ->orderBy('id', 'desc')
                 ->get();
 
-            return response()->json($petitions, 200);
-
+            return $this->sendResponse($petitions, 'Peticiones firmadas recuperadas con éxito');
         } catch (\Exception $e) {
-            return response()->json([
-                'error' => 'Error al recuperar peticiones firmadas',
-                'message' => $e->getMessage()
-            ], 500);
+            return $this->sendError('Error al recuperar peticiones firmadas', $e->getMessage(), 500);
         }
     }
 
     public function store(Request $request)
     {
+        // 1. Validar archivos como array
         $validator = Validator::make($request->all(), [
-            'title'       => 'required|max:255',
-            'description' => 'required',
-            'destinatary' => 'required',
+            'title' => 'required|string|max:255',
+            'description' => 'required|string',
+            'destinatary' => 'required|string|max:255',
             'category_id' => 'required|exists:categories,id',
-            'file'        => 'required|file|mimes:jpg,jpeg,png,webp|max:4096',
+            'files' => 'nullable|array',
+            'files.*' => 'image|mimes:jpeg,png,jpg,gif,webp|max:4096', // valida cada imagen individualmente
         ]);
 
         if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+            return $this->sendError('Error de validación', $validator->errors(), 422);
         }
 
         try {
-            $file = $request->file('file');
-            $path = $file->store('peticiones', 'public');
+            // 2. Crear la petición principal
+            $petition = new Petition();
+            $petition->title = $request->title;
+            $petition->description = $request->description;
+            $petition->destinatary = $request->destinatary;
+            $petition->category_id = $request->category_id;
+            $petition->user_id = Auth::guard('api')->id();
+            $petition->signeds = 0;
+            $petition->status = 'pending';
+            $petition->save();
 
-            $petition = Petition::create([
-                'title'       => $request->title,
-                'description' => $request->description,
-                'destinatary' => $request->destinatary,
-                'category_id' => $request->category_id,
-                'user_id'     => Auth::guard('api')->id(),
-                'signeds'     => 0,
-                'status'      => 'pending',
-            ]);
+            // 3. Procesar múltiples archivos en bucle
+            if ($request->hasFile('files')) {
+                foreach ($request->file('files') as $file) {
+                    // Guardar archivo en storage/app/public/peticiones
+                    $path = $file->store('peticiones', 'public');
 
-            // ✅ OJO: files() porque es hasMany
-            $petition->files()->create([
-                'name'      => $file->getClientOriginalName(),
-                'file_path' => $path,
-            ]);
-
-            return response()->json([
-                'message' => 'Petición creada con éxito',
-                'data' => $petition->load(['files', 'category', 'user'])
-            ], 201);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'error' => 'Error al crear la petición',
-                'message' => $e->getMessage()
-            ], 500);
-        }
-    }
-
-    public function update(Request $request, $id)
-    {
-        try {
-            $petition = Petition::with('files')->findOrFail($id);
-
-            if (Auth::guard('api')->id() !== $petition->user_id) {
-                return response()->json(['error' => 'No autorizado'], 403);
-            }
-
-            $validator = Validator::make($request->all(), [
-                'title'       => 'required|max:255',
-                'description' => 'required',
-                'destinatary' => 'required',
-                'category_id' => 'required|exists:categories,id',
-                'file'        => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
-            ]);
-
-            if ($validator->fails()) {
-                return response()->json(['errors' => $validator->errors()], 422);
-            }
-
-            $petition->update([
-                'title'       => $request->title,
-                'description' => $request->description,
-                'destinatary' => $request->destinatary,
-                'category_id' => $request->category_id,
-            ]);
-
-            if ($request->hasFile('file')) {
-                $file = $request->file('file');
-                $path = $file->store('peticiones', 'public');
-
-                $fileRecord = $petition->files()->first();
-
-                if ($fileRecord) {
-                    Storage::disk('public')->delete($fileRecord->file_path);
-
-                    $fileRecord->update([
-                        'name'      => $file->getClientOriginalName(),
-                        'file_path' => $path,
-                    ]);
-                } else {
+                    // Crear registro en la tabla Files relacionada
                     $petition->files()->create([
-                        'name'      => $file->getClientOriginalName(),
+                        'name' => $file->getClientOriginalName(),
                         'file_path' => $path,
                     ]);
                 }
             }
-
-            return response()->json([
-                'message' => 'Petición actualizada correctamente',
-                'data' => $petition->load(['files', 'category', 'user'])
-            ], 200);
-
+            return $this->sendResponse(
+                $petition->load(['files', 'category', 'user']),
+                'Petición creada con éxito',
+                201
+            );
         } catch (\Exception $e) {
-            return response()->json([
-                'error' => 'Error al actualizar',
-                'message' => $e->getMessage()
-            ], 500);
+            return $this->sendError('Error al crear la petición', $e->getMessage(), 500);
         }
     }
-
-    public function destroy($id)
+    public function update(Request $request, $id)
     {
         try {
-            $petition = Petition::with('files')->findOrFail($id);
+            $petition = Petition::findOrFail($id);
 
-            if (Auth::guard('api')->id() !== $petition->user_id) {
-                return response()->json(['error' => 'No autorizado'], 403);
+            // Validación del usuario
+            $user = Auth::guard('api')->user();
+            if (!$user || $petition->user_id !== $user->id) {
+                return $this->sendError('No autorizado', [], 403);
             }
 
-            $fileRecord = $petition->files()->first();
+            // 1. Validar los nuevos campos y el array de archivos
+            $validator = Validator::make($request->all(), [
+                'title'       => 'required|string|max:255',
+                'description' => 'required|string',
+                'destinatary' => 'required|string|max:255',
+                'category_id' => 'required|exists:categories,id',
+                'files'       => 'nullable|array',
+                'files.*'     => 'image|mimes:jpeg,png,jpg,webp|max:4096',
+            ]);
 
-            if ($fileRecord) {
-                Storage::disk('public')->delete($fileRecord->file_path);
-                $fileRecord->delete();
+            if ($validator->fails()) {
+                return $this->sendError('Error de validación', $validator->errors(), 422);
             }
+
+            // 2. Actualizar datos básicos
+            $petition->update($request->only(['title', 'description', 'destinatary', 'category_id']));
+
+            // 3. Procesar múltiples imágenes si se han enviado nuevas
+            if ($request->hasFile('files')) {
+                // Guardamos cada archivo nuevo
+                foreach ($request->file('files') as $file) {
+                    $path = $file->store('peticiones', 'public');
+
+                $petition->files()->create([
+                    'name' => $file->getClientOriginalName(),
+                    'file_path' => $path
+                ]);
+            }
+            }
+            return $this->sendResponse(
+                $petition->load('files'),
+                'Petición actualizada con éxito'
+            );
+    } catch (\Exception $e) {
+            return $this->sendError('Error al actualizar', $e->getMessage(), 500);
+        }
+    }
+    public function destroy(Request $request, $id)
+    {
+        try {
+            $petition = Petition::with(['files', 'signedUsers'])->findOrFail($id);
+
+            $user = Auth::guard('api')->user();
+            if (!$user) {
+                return $this->sendError('No autenticado', [], 401);
+            }
+
+            if ($petition->user_id !== $user->id) {
+                return $this->sendError('No autorizado', [], 403);
+            }
+
+            $petition->signedUsers()->detach();
+
+            foreach ($petition->files as $file) {
+                if ($file->file_path) {
+                    Storage::disk('public')->delete($file->file_path);
+                }
+            }
+
+            $petition->files()->delete();
 
             $petition->delete();
 
-            return response()->json(['message' => 'Petición eliminada correctamente'], 200);
+            return $this->sendResponse(null, 'Petición eliminada con éxito');
 
         } catch (\Exception $e) {
-            return response()->json([
-                'error' => 'Error al eliminar',
-                'message' => $e->getMessage()
-            ], 500);
+            return $this->sendError('Error al eliminar', $e->getMessage(), 500);
         }
     }
 
-    public function firmar($id)
+    public function firmar(Request $request, $id)
     {
         try {
             $petition = Petition::findOrFail($id);
             $user = Auth::guard('api')->user();
 
+            if (!$user) {
+                return $this->sendError('No autenticado', [], 401);
+            }
+
             if ($petition->signedUsers()->where('user_id', $user->id)->exists()) {
-                return response()->json(['error' => 'Ya has firmado esta petición'], 403);
+                return $this->sendError('Ya has firmado esta petición', [], 403);
             }
 
             $petition->signedUsers()->attach($user->id);
             $petition->increment('signeds');
 
-            return response()->json(['message' => 'Petición firmada correctamente'], 200);
-
+            return $this->sendResponse($petition, 'Petición firmada con éxito', 201);
         } catch (\Exception $e) {
-            return response()->json([
-                'error' => 'Error al firmar',
-                'message' => $e->getMessage()
-            ], 500);
+            return $this->sendError('No se pudo firmar la petición', $e->getMessage(), 500);
         }
     }
 }
