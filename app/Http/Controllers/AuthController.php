@@ -29,7 +29,6 @@ class AuthController extends Controller
             ], 401);
         }
 
-        // 🔥 IMPORTANTE: devolvemos token + user (Angular lo agradece)
         return $this->respondWithToken($token);
     }
 
@@ -83,7 +82,6 @@ class AuthController extends Controller
             ]);
 
         } catch (JWTException $e) {
-            // Si el token ya es inválido, para el front igualmente es logout OK
             return response()->json([
                 'message' => 'Sesión cerrada'
             ], 200);
@@ -135,7 +133,6 @@ class AuthController extends Controller
             'token_type' => 'bearer',
             'expires_in' => JWTAuth::factory()->getTTL() * 60,
 
-            // ✅ útil para Angular (para navbar, profile, etc.)
             'user' => JWTAuth::user()
         ]);
     }

@@ -25,7 +25,6 @@ Route::middleware('auth:api')->group(function () {
     Route::post('logout', [AuthController::class, 'logout']);
     Route::get('me', [AuthController::class, 'me']);
 
-    // ✅ FRONT COMPATIBLE
     Route::get('mispeticiones', [PetitionController::class, 'mine']);
     Route::get('misfirmas', [PetitionController::class, 'signed']);
 
