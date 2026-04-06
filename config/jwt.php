@@ -89,7 +89,7 @@ return [
     |
     */
 
-    'ttl' => (int) env('JWT_TTL', 1),
+    'ttl' => (int) env('JWT_TTL', 60),
 
     /*
     |--------------------------------------------------------------------------
@@ -233,8 +233,7 @@ return [
     |
     */
 
-    'blacklist_grace_period' => (int) env('JWT_BLACKLIST_GRACE_PERIOD', 0),
-
+    'blacklist_grace_period' => (int) env('JWT_BLACKLIST_GRACE_PERIOD', 600),
     /*
     |--------------------------------------------------------------------------
     | Show blacklisted token option

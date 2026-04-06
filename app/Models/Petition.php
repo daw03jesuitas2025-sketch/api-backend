@@ -3,6 +3,9 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
 class Petition extends Model
 {
@@ -16,27 +19,27 @@ class Petition extends Model
         'status',
     ];
 
-    // 1:N (muchas peticiones pueden compartir la misma categoría)
-    public function category()
+    // Relación con Category (antes categoria)
+    public function category(): BelongsTo
     {
-        return $this->belongsTo('App\Models\Category');
+        return $this->belongsTo(Category::class, 'category_id');
     }
 
-    // 1:N Un usuario puede crear muchas peticiones
-    public function user()
+    // Relación con User
+    public function user(): BelongsTo
     {
-        return $this->belongsTo('App\Models\User');
+        return $this->belongsTo(User::class);
     }
 
-    // N:M Muchos usuarios pueden firmar muchas peticiones
-    public function signedUsers()
+    // Relación para contar firmas (withCount buscará 'signatures')
+    public function signatures(): BelongsToMany
     {
-        return $this->belongsToMany('App\Models\User', 'petition_user')->withTimestamps();
+        return $this->belongsToMany(User::class, 'petition_user')->withTimestamps();
     }
 
-    // ✅ 1:N Una petición puede tener varios archivos (aunque uses 1)
-    public function files()
+    // Relación con archivos
+    public function files(): HasMany
     {
-        return $this->hasMany('App\Models\File');
+        return $this->hasMany(File::class);
     }
 }

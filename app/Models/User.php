@@ -11,6 +11,7 @@ class User extends Authenticatable implements JWTSubject
         'name',
         'email',
         'password',
+        'role',
     ];
     protected $hidden = [
         'password',
@@ -20,7 +21,7 @@ class User extends Authenticatable implements JWTSubject
     {
         return [
             'email_verified_at' => 'datetime',
-            'password' => 'hashed', // 👈 Laravel 12 hashea automáticamente
+            'password' => 'hashed',
         ];
     }
     public function getJWTIdentifier()
@@ -37,6 +38,16 @@ class User extends Authenticatable implements JWTSubject
     }
 
     public function signedPetitions()
+    {
+        return $this->belongsToMany(Petition::class, 'petition_user')
+            ->withTimestamps();
+    }
+    public function peticiones()
+    {
+        return $this->hasMany(Petition::class);
+    }
+
+    public function firmas()
     {
         return $this->belongsToMany(Petition::class, 'petition_user')
             ->withTimestamps();

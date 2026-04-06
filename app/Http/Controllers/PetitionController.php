@@ -162,14 +162,12 @@ class PetitionController extends Controller
     {
         try {
             $petition = Petition::findOrFail($id);
-
-            // Validación del usuario
             $user = Auth::guard('api')->user();
-            if (!$user || $petition->user_id !== $user->id) {
-                return $this->sendError('No autorizado', [], 403);
+
+            if (!$user || $user->cannot('update', $petition)) {
+                return $this->sendError('No autorizado para editar esta petición', [], 403);
             }
 
-            // 1. Validar los nuevos campos y el array de archivos
             $validator = Validator::make($request->all(), [
                 'title'       => 'required|string|max:255',
                 'description' => 'required|string',
@@ -183,41 +181,32 @@ class PetitionController extends Controller
                 return $this->sendError('Error de validación', $validator->errors(), 422);
             }
 
-            // 2. Actualizar datos básicos
             $petition->update($request->only(['title', 'description', 'destinatary', 'category_id']));
 
-            // 3. Procesar múltiples imágenes si se han enviado nuevas
             if ($request->hasFile('files')) {
-                // Guardamos cada archivo nuevo
                 foreach ($request->file('files') as $file) {
                     $path = $file->store('peticiones', 'public');
+                    $petition->files()->create([
+                        'name' => $file->getClientOriginalName(),
+                        'file_path' => $path
+                    ]);
+                }
+            }
+            return $this->sendResponse($petition->load('files'), 'Petición actualizada con éxito');
 
-                $petition->files()->create([
-                    'name' => $file->getClientOriginalName(),
-                    'file_path' => $path
-                ]);
-            }
-            }
-            return $this->sendResponse(
-                $petition->load('files'),
-                'Petición actualizada con éxito'
-            );
-    } catch (\Exception $e) {
+        } catch (\Exception $e) {
             return $this->sendError('Error al actualizar', $e->getMessage(), 500);
         }
     }
+
     public function destroy(Request $request, $id)
     {
         try {
             $petition = Petition::with(['files', 'signedUsers'])->findOrFail($id);
-
             $user = Auth::guard('api')->user();
-            if (!$user) {
-                return $this->sendError('No autenticado', [], 401);
-            }
 
-            if ($petition->user_id !== $user->id) {
-                return $this->sendError('No autorizado', [], 403);
+            if (!$user || $user->cannot('delete', $petition)) {
+                return $this->sendError('No autorizado para eliminar esta petición', [], 403);
             }
 
             $petition->signedUsers()->detach();
@@ -229,7 +218,6 @@ class PetitionController extends Controller
             }
 
             $petition->files()->delete();
-
             $petition->delete();
 
             return $this->sendResponse(null, 'Petición eliminada con éxito');
@@ -245,8 +233,8 @@ class PetitionController extends Controller
             $petition = Petition::findOrFail($id);
             $user = Auth::guard('api')->user();
 
-            if (!$user) {
-                return $this->sendError('No autenticado', [], 401);
+            if (!$user || $user->cannot('firmar', $petition)) {
+                return $this->sendError('No puedes firmar tu propia petición', [], 403);
             }
 
             if ($petition->signedUsers()->where('user_id', $user->id)->exists()) {
@@ -257,6 +245,7 @@ class PetitionController extends Controller
             $petition->increment('signeds');
 
             return $this->sendResponse($petition, 'Petición firmada con éxito', 201);
+
         } catch (\Exception $e) {
             return $this->sendError('No se pudo firmar la petición', $e->getMessage(), 500);
         }
